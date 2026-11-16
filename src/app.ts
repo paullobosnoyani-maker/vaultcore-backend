@@ -17,6 +17,6 @@ app.get('/status', (req, res) => {
     res.json({ status: 'HEALTHY', message: 'Fintech ledger system core engine operational.' });
 });
 
-app.listen(PORT, () => {
+app.listen(Number(PORT), "0.0.0.0", () => {
     console.log(`🚀 Fintech server dashboard running cleanly on port ${PORT}`);
 });
