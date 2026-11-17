@@ -81,7 +81,7 @@ export async function verifyEmailOtp(email: string, code: string): Promise<boole
   );
   if (res.rows.length === 0) return false;
 
-  const record = res.rows;
+  const record = res.rows[0];
   if (new Date(record.expires_at) < new Date() || record.attempts >= 5) {
     await pool.query("DELETE FROM email_otps WHERE id = $1", [record.id]);
     return false;

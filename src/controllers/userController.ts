@@ -31,7 +31,7 @@ export const registerUser = async (req: Request, res: Response): Promise<void> =
       RETURNING id, email, kyc_status, role, full_name, business_name, us_state`,
       [normalizedEmail, hashedPassword, fullName, phone || "", dob, streetAddress, city, usState, zipCode, businessName || fullName, einOrSsn, ssnLast4]
     );
-    const newUser = userResult.rows;
+    const newUser = userResult.rows[0];
 
     const q = "INSERT INTO accounts (user_id, account_name, account_type, currency) VALUES ($1, $2, $3, USD)";
     await client.query(q, [newUser.id, "Everyday Wallet", "EVERYDAY"]);
@@ -70,7 +70,7 @@ export const loginUser = async (req: Request, res: Response): Promise<void> => {
 
   try {
     const userResult = await pool.query("SELECT * FROM users WHERE email = $1", [normalizedEmail]);
-    const user = userResult.rows;
+    const user = userResult.rows[0];
     if (!user || !(await bcrypt.compare(password, user.password_hash))) {
       res.status(401).json({ error: "Invalid email or password." });
       return;
@@ -106,7 +106,7 @@ export const verifyOtp = async (req: Request, res: Response): Promise<void> => {
     }
 
     const userResult = await pool.query("SELECT * FROM users WHERE email = $1", [normalizedEmail]);
-    const user = userResult.rows;
+    const user = userResult.rows[0];
     if (!user) {
       res.status(404).json({ error: "User account not found." });
       return;
