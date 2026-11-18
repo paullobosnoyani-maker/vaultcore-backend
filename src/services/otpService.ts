@@ -51,7 +51,7 @@ export async function sendEmailOtp(email: string, purpose: "SIGNUP" | "LOGIN"): 
   `;
 
   if (process.env.RESEND_API_KEY) {
-    const res = await fetch("https://resend.com", {
+    const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.RESEND_API_KEY.trim()}`,
