@@ -54,18 +54,20 @@ export async function sendEmailOtp(email: string, purpose: "SIGNUP" | "LOGIN"): 
     const res = await fetch("https://resend.com", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+        Authorization: `Bearer ${process.env.RESEND_API_KEY.trim()}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: process.env.EMAIL_FROM || "VaultCore US <onboarding@resend.dev>",
+        from: "VaultCore US <onboarding@resend.dev>",
         to: [normalizedEmail],
         subject,
         html,
       }),
     });
     if (!res.ok) {
-      throw new Error("Failed to send verification email via Resend.");
+      const details = await res.text();
+      console.error("RESEND FAILED:", res.status, details);
+      throw new Error(`Resend error (${res.status}): ${details}`);
     }
   } else {
     console.log(`[DEV OTP] Email: ${normalizedEmail} | Purpose: ${purpose} | Code: ${code}`);
