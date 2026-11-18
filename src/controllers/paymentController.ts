@@ -24,9 +24,11 @@ export const createStripePaymentIntent = async (req: Request, res: Response): Pr
 };
 
 export const confirmStripeDeposit = async (req: Request, res: Response): Promise<void> => {
-    const { paymentIntentId, accountId } = req.body;
-    if (!paymentIntentId || !accountId) {
-        res.status(400).json({ error: "PaymentIntent ID and target wallet ID are required." });
+    let { paymentIntentId, accountId } = req.body;
+    const userId = (req as any).user?.id || (req as any).user?.userId;
+
+    if (!paymentIntentId) {
+        res.status(400).json({ error: "PaymentIntent ID is required." });
         return;
     }
 
@@ -42,6 +44,30 @@ export const confirmStripeDeposit = async (req: Request, res: Response): Promise
         const verifiedUsdAmount = intent.amount_received / 100;
 
         await client.query("BEGIN");
+
+        if (!accountId && userId) {
+            let walletRes = await client.query(
+                "SELECT id FROM accounts WHERE user_id = $1 ORDER BY created_at ASC LIMIT 1",
+                [userId]
+            );
+            if (walletRes.rows.length === 0) {
+                walletRes = await client.query(
+                    `INSERT INTO accounts (user_id, account_name, account_type, currency) VALUES
+                     ($1, 'Everyday Operating Checking', 'EVERYDAY', 'USD'),
+                     ($1, 'Payroll & Tax Reserve', 'RESERVE', 'USD'),
+                     ($1, 'Treasury Yield Reserve', 'TREASURY', 'USD')
+                     RETURNING id`,
+                    [userId]
+                );
+            }
+            accountId = walletRes.rows.at(0)?.id;
+        }
+
+        if (!accountId) {
+            await client.query("ROLLBACK");
+            res.status(400).json({ error: "Target wallet ID could not be resolved." });
+            return;
+        }
 
         const existing = await client.query(
             "SELECT id FROM ledger WHERE reference_id = $1 LIMIT 1",
@@ -63,7 +89,7 @@ export const confirmStripeDeposit = async (req: Request, res: Response): Promise
     } catch (error: any) {
         await client.query("ROLLBACK");
         console.error("Stripe confirmation error:", error.message);
-        res.status(500).json({ error: "System error confirming Stripe deposit." });
+        res.status(500).json({ error: `Stripe deposit error: ${error.message}` });
     } finally {
         client.release();
     }
