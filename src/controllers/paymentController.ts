@@ -4,6 +4,20 @@ import pool from "../config/db";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string);
 
+async function ensureLedgerTable(client: any): Promise<void> {
+    await client.query(`
+        CREATE TABLE IF NOT EXISTS ledger (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+            amount NUMERIC(15, 2) NOT NULL,
+            transaction_type VARCHAR(50) NOT NULL,
+            description TEXT,
+            reference_id VARCHAR(255),
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+    `);
+}
+
 export const createStripePaymentIntent = async (req: Request, res: Response): Promise<void> => {
     const { amount } = req.body;
     if (!amount || amount < 1) {
@@ -44,6 +58,7 @@ export const confirmStripeDeposit = async (req: Request, res: Response): Promise
         const verifiedUsdAmount = intent.amount_received / 100;
 
         await client.query("BEGIN");
+        await ensureLedgerTable(client);
 
         if (!accountId && userId) {
             let walletRes = await client.query(
