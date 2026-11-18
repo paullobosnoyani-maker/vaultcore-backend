@@ -115,16 +115,32 @@ export const handleMemberTransfer = async (req: Request, res: Response): Promise
 export const getUserDashboard = async (req: Request, res: Response): Promise<void> => {
     const { userId } = req.params;
     try {
-        const walletsResult = await pool.query(
+        let walletsResult = await pool.query(
             "SELECT a.id, a.account_name, a.account_type, a.currency, COALESCE(SUM(l.amount), 0) AS balance FROM accounts a LEFT JOIN ledger l ON a.id = l.account_id WHERE a.user_id = $1 GROUP BY a.id, a.account_name, a.account_type, a.currency ORDER BY a.created_at ASC;",
             [userId]
         );
+
+        if (walletsResult.rows.length === 0) {
+            await pool.query(
+                `INSERT INTO accounts (user_id, account_name, account_type, currency) VALUES
+                 ($1, 'Everyday Operating Checking', 'EVERYDAY', 'USD'),
+                 ($1, 'Payroll & Tax Reserve', 'RESERVE', 'USD'),
+                 ($1, 'Treasury Yield Reserve', 'TREASURY', 'USD')`,
+                [userId]
+            );
+            walletsResult = await pool.query(
+                "SELECT a.id, a.account_name, a.account_type, a.currency, COALESCE(SUM(l.amount), 0) AS balance FROM accounts a LEFT JOIN ledger l ON a.id = l.account_id WHERE a.user_id = $1 GROUP BY a.id, a.account_name, a.account_type, a.currency ORDER BY a.created_at ASC;",
+                [userId]
+            );
+        }
+
         const transactionsResult = await pool.query(
             "SELECT l.id, a.account_name, l.amount, l.transaction_type, l.description, l.created_at FROM ledger l JOIN accounts a ON l.account_id = a.id WHERE a.user_id = $1 ORDER BY l.created_at DESC LIMIT 10;",
             [userId]
         );
         res.status(200).json({ wallets: walletsResult.rows, recentTransactions: transactionsResult.rows });
     } catch (error: any) {
+        console.error("Dashboard error:", error);
         res.status(500).json({ error: "System error loading dashboard data." });
     }
 };
