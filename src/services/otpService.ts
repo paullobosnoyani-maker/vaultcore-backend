@@ -58,7 +58,7 @@ export async function sendEmailOtp(email: string, purpose: "SIGNUP" | "LOGIN"): 
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: "VaultCore US <onboarding@resend.dev>",
+        from: process.env.EMAIL_FROM || "VaultCore US <security@vaultcoreus.com>",
         to: [normalizedEmail],
         subject,
         html,
