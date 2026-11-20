@@ -61,7 +61,7 @@ async function sendWireEmailFallback(email: string, code: string, amount: number
   if (!apiKey) return;
 
   const fromAddress = process.env.EMAIL_FROM || "VaultCore US <security@vaultcoreus.com>";
-  const res = await fetch("https://resend.com", {
+  const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
