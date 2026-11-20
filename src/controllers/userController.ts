@@ -27,13 +27,13 @@ export const registerUser = async (req: Request, res: Response): Promise<void> =
       `INSERT INTO users (
         email, password_hash, kyc_status, role, full_name, phone, dob,
         street_address, city, us_state, zip_code, business_name, ein_or_ssn, ssn_last4
-      ) VALUES ($1, $2, SUBMITTED, USER, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      ) VALUES ($1, $2, 'SUBMITTED', 'USER', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING id, email, kyc_status, role, full_name, business_name, us_state`,
       [normalizedEmail, hashedPassword, fullName, phone || "", dob, streetAddress, city, usState, zipCode, businessName || fullName, einOrSsn, ssnLast4]
     );
     const newUser = userResult.rows[0];
 
-    const q = "INSERT INTO accounts (user_id, account_name, account_type, currency) VALUES ($1, $2, $3, USD)";
+    const q = "INSERT INTO accounts (user_id, account_name, account_type, currency) VALUES ($1, $2, $3, 'USD')";
     await client.query(q, [newUser.id, "Everyday Wallet", "EVERYDAY"]);
     await client.query(q, [newUser.id, "Target Savings Goal", "SAVINGS_GOAL"]);
     await client.query(q, [newUser.id, "Grant & Loan Reserve", "GRANT_RESERVE"]);
