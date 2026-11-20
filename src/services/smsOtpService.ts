@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import https from "https";
 import pool from "../config/db";
 
 export async function ensureSmsOtpTable(): Promise<void> {
@@ -22,6 +23,39 @@ function hashSmsOtp(userId: string, code: string): string {
     .digest("hex");
 }
 
+function postTwilioSms(sid: string, token: string, formBody: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const auth = Buffer.from(`${sid}:${token}`).toString("base64");
+    const req = https.request(
+      {
+        hostname: "://twilio.com",
+        port: 443,
+        path: `/2010-04-01/Accounts/${sid}/Messages.json`,
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${auth}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Content-Length": Buffer.byteLength(formBody),
+        },
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+            resolve();
+          } else {
+            reject(new Error(`Twilio error (${res.statusCode}): ${data}`));
+          }
+        });
+      }
+    );
+    req.on("error", (err) => reject(new Error(`Twilio network error: ${err.message}`)));
+    req.write(formBody);
+    req.end();
+  });
+}
+
 export async function sendWireSmsOtp(userId: string, rawPhone: string, amount: number): Promise<string> {
   await ensureSmsOtpTable();
 
@@ -29,7 +63,11 @@ export async function sendWireSmsOtp(userId: string, rawPhone: string, amount: n
   if (digits.length < 10) {
     throw new Error("A valid phone number is required on your profile for SMS wire verification.");
   }
-  const e164Phone = rawPhone.startsWith("+") ? `+${digits}` : digits.length === 10 ? `+1${digits}` : `+${digits}`;
+  const e164Phone = rawPhone.trim().startsWith("+")
+    ? `+${digits}`
+    : digits.length === 10
+    ? `+1${digits}`
+    : `+${digits}`;
 
   const code = crypto.randomInt(100000, 999999).toString();
   const otpHash = hashSmsOtp(userId, code);
@@ -41,31 +79,18 @@ export async function sendWireSmsOtp(userId: string, rawPhone: string, amount: n
     [userId, e164Phone, otpHash, expiresAt]
   );
 
-  const sid = process.env.TWILIO_ACCOUNT_SID?.trim();
-  const token = process.env.TWILIO_AUTH_TOKEN?.trim();
-  const from = process.env.TWILIO_PHONE_NUMBER?.trim();
+  const sid = (process.env.TWILIO_ACCOUNT_SID || "").replace(/\s+/g, "");
+  const token = (process.env.TWILIO_AUTH_TOKEN || "").replace(/\s+/g, "");
+  const from = (process.env.TWILIO_PHONE_NUMBER || "").replace(/\s+/g, "");
 
   if (sid && token && from) {
     const body = new URLSearchParams({
       To: e164Phone,
       From: from,
       Body: `VaultCore US Security: Your wire transfer verification code for $${amount.toFixed(2)} USD is ${code}. Expires in 5 minutes.`,
-    });
+    }).toString();
 
-    const auth = Buffer.from(`${sid}:${token}`).toString("base64");
-    const res = await fetch(`https://twilio.com{sid}/Messages.json`, {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${auth}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: body.toString(),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Twilio SMS failed (${res.status}): ${errText}`);
-    }
+    await postTwilioSms(sid, token, body);
   } else {
     console.log(`[DEV SMS OTP] User: ${userId} | Phone: ${e164Phone} | Code: ${code}`);
   }
