@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { registerUser, loginUser, verifyOtp, resendOtp } from "../controllers/userController";
-import { handleDeposit, handleP2PTransfer, handleMemberTransfer, getUserDashboard } from "../controllers/ledgerController";
+import { handleDeposit, handleP2PTransfer, handleMemberTransfer, requestWireSmsOtp, getUserDashboard } from "../controllers/ledgerController";
 import { createStripePaymentIntent, confirmStripeDeposit } from "../controllers/paymentController";
 import { submitFundingApplication, getFundingApplications, approveFundingApplication } from "../controllers/fundingController";
 import { requestAchWithdrawal } from "../controllers/payoutController";
@@ -15,6 +15,7 @@ router.post("/resend-otp", resendOtp);
 
 router.post("/deposit", authenticateToken, handleDeposit);
 router.post("/transfer", authenticateToken, handleP2PTransfer);
+router.post("/wire-sms-otp", authenticateToken, requestWireSmsOtp);
 router.post("/member-transfer", authenticateToken, handleMemberTransfer);
 router.post("/stripe/create-intent", authenticateToken, createStripePaymentIntent);
 router.post("/stripe/confirm", authenticateToken, confirmStripeDeposit);
