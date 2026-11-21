@@ -140,7 +140,8 @@ export async function sendWireSmsOtp(userId: string, rawPhone: string, amount: n
 
   if (userEmail) {
     await sendWireEmailFallback(userEmail, code, amount);
-    return `verified email (${userEmail})`;
+    const [localPart, domain] = userEmail.split("@");
+    return `${localPart.slice(0, 2)}***@${domain}`;
   }
 
   throw new Error("Could not deliver wire security code via SMS or email.");
