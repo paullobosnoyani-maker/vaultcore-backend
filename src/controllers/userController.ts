@@ -4,7 +4,7 @@ import jwt from "jsonwebtoken";
 import pool from "../config/db";
 import { sendEmailOtp, verifyEmailOtp } from "../services/otpService";
 
-   export const registerUser = async (req: Request, res: Response): Promise<void> => {
+export const registerUser = async (req: Request, res: Response): Promise<void> => {
   const {
     email, password, fullName, phone, dob,
     streetAddress, city, usState, zipCode, businessName, einOrSsn, accountCategory
@@ -15,7 +15,6 @@ import { sendEmailOtp, verifyEmailOtp } from "../services/otpService";
     return;
   }
 
-  // 1. Validate strict 4-digit birth year and 18+ age requirement
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dob))) {
     res.status(400).json({ error: "Enter a valid 4-digit birth year (YYYY-MM-DD)." });
     return;
@@ -27,14 +26,12 @@ import { sendEmailOtp, verifyEmailOtp } from "../services/otpService";
     return;
   }
 
-  // 2. Validate phone number digits (10 to 15 digits only)
   const phoneDigits = String(phone).replace(/\D/g, "");
   if (phoneDigits.length < 10 || phoneDigits.length > 15) {
     res.status(400).json({ error: "Enter a valid phone number (10 to 15 digits)." });
     return;
   }
 
-  // 3. Validate SSN (9 digits) for Personal vs EIN (9 digits) for Business
   const isPersonal = String(accountCategory || "").toLowerCase() === "personal";
   const taxDigits = String(einOrSsn).replace(/\D/g, "");
   if (taxDigits.length !== 9) {
@@ -70,7 +67,7 @@ import { sendEmailOtp, verifyEmailOtp } from "../services/otpService";
         city,
         usState,
         zipCode,
-        businessName || (isPersonal ? `${fullName} (Personal)` : fullName),
+        businessName || (isPersonal ? `${fullName} (Personal Checkings)` : fullName),
         einOrSsn,
         ssnLast4,
       ]
@@ -108,6 +105,13 @@ import { sendEmailOtp, verifyEmailOtp } from "../services/otpService";
   }
 };
 
+export const loginUser = async (req: Request, res: Response): Promise<void> => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    res.status(400).json({ error: "Email and password are required." });
+    return;
+  }
+
   const normalizedEmail = email.toLowerCase().trim();
 
   try {
@@ -141,27 +145,31 @@ export const verifyOtp = async (req: Request, res: Response): Promise<void> => {
   const normalizedEmail = email.toLowerCase().trim();
 
   try {
-    const isValid = await verifyEmailOtp(normalizedEmail, String(code));
-    if (!isValid) {
+    const valid = await verifyEmailOtp(normalizedEmail, String(code).trim());
+    if (!valid) {
       res.status(401).json({ error: "Invalid or expired 6-digit verification code." });
       return;
     }
 
+    await pool.query(
+      "UPDATE users SET kyc_status = 'VERIFIED' WHERE email = $1 AND kyc_status != 'VERIFIED'",
+      [normalizedEmail]
+    );
+
     const userResult = await pool.query("SELECT * FROM users WHERE email = $1", [normalizedEmail]);
     const user = userResult.rows[0];
     if (!user) {
-      res.status(404).json({ error: "User account not found." });
+      res.status(404).json({ error: "User not found." });
       return;
     }
 
     const token = jwt.sign(
       { userId: user.id, email: user.email, role: user.role },
       process.env.JWT_SECRET as string,
-      { expiresIn: "2h" }
+      { expiresIn: "24h" }
     );
 
     res.status(200).json({
-      message: "Verification successful.",
       token,
       user: {
         id: user.id,
@@ -169,11 +177,12 @@ export const verifyOtp = async (req: Request, res: Response): Promise<void> => {
         kyc_status: user.kyc_status,
         role: user.role,
         full_name: user.full_name,
-        business_name: user.business_name
-      }
+        business_name: user.business_name,
+        us_state: user.us_state,
+      },
     });
-  } catch (error) {
-    res.status(500).json({ error: "Failed to verify code." });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Error verifying code." });
   }
 };
 
@@ -184,9 +193,12 @@ export const resendOtp = async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  const normalizedEmail = email.toLowerCase().trim();
+  const otpPurpose = purpose === "SIGNUP" ? "SIGNUP" : "LOGIN";
+
   try {
-    await sendEmailOtp(email, purpose === "SIGNUP" ? "SIGNUP" : "LOGIN");
-    res.status(200).json({ message: "A new 6-digit verification code has been sent." });
+    await sendEmailOtp(normalizedEmail, otpPurpose);
+    res.status(200).json({ message: "A new 6-digit verification code has been sent to your email." });
   } catch (error: any) {
     res.status(500).json({ error: error.message || "Failed to resend verification code." });
   }
