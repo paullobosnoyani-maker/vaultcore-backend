@@ -4,19 +4,50 @@ import jwt from "jsonwebtoken";
 import pool from "../config/db";
 import { sendEmailOtp, verifyEmailOtp } from "../services/otpService";
 
-export const registerUser = async (req: Request, res: Response): Promise<void> => {
+   export const registerUser = async (req: Request, res: Response): Promise<void> => {
   const {
     email, password, fullName, phone, dob,
-    streetAddress, city, usState, zipCode, businessName, einOrSsn
+    streetAddress, city, usState, zipCode, businessName, einOrSsn, accountCategory
   } = req.body;
 
-  if (!email || !password || !fullName || !dob || !streetAddress || !city || !usState || !zipCode || !einOrSsn) {
-    res.status(400).json({ error: "All US CIP identity, address, DOB, and SSN/EIN fields are required." });
+  if (!email || !password || !fullName || !phone || !dob || !streetAddress || !city || !usState || !zipCode || !einOrSsn) {
+    res.status(400).json({ error: "All identity, address, phone, DOB, and tax ID fields are required." });
+    return;
+  }
+
+  // 1. Validate strict 4-digit birth year and 18+ age requirement
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dob))) {
+    res.status(400).json({ error: "Enter a valid 4-digit birth year (YYYY-MM-DD)." });
+    return;
+  }
+  const birthYear = parseInt(String(dob).slice(0, 4), 10);
+  const currentYear = new Date().getFullYear();
+  if (birthYear < 1920 || birthYear > currentYear - 18) {
+    res.status(400).json({ error: "Applicant must be at least 18 years old with a valid 4-digit birth year." });
+    return;
+  }
+
+  // 2. Validate phone number digits (10 to 15 digits only)
+  const phoneDigits = String(phone).replace(/\D/g, "");
+  if (phoneDigits.length < 10 || phoneDigits.length > 15) {
+    res.status(400).json({ error: "Enter a valid phone number (10 to 15 digits)." });
+    return;
+  }
+
+  // 3. Validate SSN (9 digits) for Personal vs EIN (9 digits) for Business
+  const isPersonal = String(accountCategory || "").toLowerCase() === "personal";
+  const taxDigits = String(einOrSsn).replace(/\D/g, "");
+  if (taxDigits.length !== 9) {
+    res.status(400).json({
+      error: isPersonal
+        ? "Personal accounts require a valid 9-digit Social Security Number (SSN)."
+        : "Business accounts require a valid 9-digit IRS EIN (XX-XXXXXXX).",
+    });
     return;
   }
 
   const normalizedEmail = email.toLowerCase().trim();
-  const ssnLast4 = String(einOrSsn).replace(/\D/g, "").slice(-4);
+  const ssnLast4 = taxDigits.slice(-4);
   const client = await pool.connect();
 
   try {
@@ -29,14 +60,32 @@ export const registerUser = async (req: Request, res: Response): Promise<void> =
         street_address, city, us_state, zip_code, business_name, ein_or_ssn, ssn_last4
       ) VALUES ($1, $2, 'SUBMITTED', 'USER', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING id, email, kyc_status, role, full_name, business_name, us_state`,
-      [normalizedEmail, hashedPassword, fullName, phone || "", dob, streetAddress, city, usState, zipCode, businessName || fullName, einOrSsn, ssnLast4]
+      [
+        normalizedEmail,
+        hashedPassword,
+        fullName,
+        phone.trim(),
+        dob,
+        streetAddress,
+        city,
+        usState,
+        zipCode,
+        businessName || (isPersonal ? `${fullName} (Personal)` : fullName),
+        einOrSsn,
+        ssnLast4,
+      ]
     );
     const newUser = userResult.rows[0];
 
     const q = "INSERT INTO accounts (user_id, account_name, account_type, currency) VALUES ($1, $2, $3, 'USD')";
-    await client.query(q, [newUser.id, "Everyday Wallet", "EVERYDAY"]);
-    await client.query(q, [newUser.id, "Target Savings Goal", "SAVINGS_GOAL"]);
-    await client.query(q, [newUser.id, "Grant & Loan Reserve", "GRANT_RESERVE"]);
+    if (isPersonal) {
+      await client.query(q, [newUser.id, "Personal Checkings", "EVERYDAY"]);
+      await client.query(q, [newUser.id, "Personal Savings", "SAVINGS_GOAL"]);
+    } else {
+      await client.query(q, [newUser.id, "Business Checkings", "EVERYDAY"]);
+      await client.query(q, [newUser.id, "Business Savings", "SAVINGS_GOAL"]);
+      await client.query(q, [newUser.id, "Grant & Loan Reserve", "GRANT_RESERVE"]);
+    }
     await client.query("COMMIT");
 
     await sendEmailOtp(normalizedEmail, "SIGNUP");
@@ -58,13 +107,6 @@ export const registerUser = async (req: Request, res: Response): Promise<void> =
     client.release();
   }
 };
-
-export const loginUser = async (req: Request, res: Response): Promise<void> => {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    res.status(400).json({ error: "Email and password are required." });
-    return;
-  }
 
   const normalizedEmail = email.toLowerCase().trim();
 
