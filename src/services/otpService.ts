@@ -221,5 +221,5 @@ export async function sendWelcomeEmail(user: {
   });
 }
 
-}
+
 
