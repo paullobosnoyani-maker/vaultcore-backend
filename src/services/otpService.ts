@@ -193,3 +193,117 @@ export async function sendWelcomeEmail(user: {
         <td align="center">
           <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background-color:#FFFFFF;border-radius:18px;overflow:hidden;border:1px solid #E2E8F0;box-shadow:0 8px 28px rgba(15,23,42,0.08);">
             <tr>
+import crypto from "crypto";
+import { Resend } from "resend";
+import pool from "../config/db";
+
+const resend = new Resend(process.env.RESEND_API_KEY);
+const FROM_EMAIL = "VaultCore US <security@vaultcoreus.com>";
+const LOGO_URL = "https://vaultcoreus.com";
+
+function generateUniqueAccountNumber(seed: string): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x1b873593;
+  const clean = (seed || "vaultcore-default").toLowerCase().trim();
+  for (let i = 0; i < clean.length; i++) {
+    const ch = clean.charCodeAt(i);
+    h1 ^= ch;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= ch + i;
+    h2 = Math.imul(h2, 0x85ebca6b);
+  }
+  const part1 = String((Math.abs(h1) % 900000) + 100000).padStart(6, "0");
+  const part2 = String((Math.abs(h2) % 900000) + 100000).padStart(6, "0");
+  return `88${part1.slice(0, 5)}${part2.slice(0, 5)}`;
+}
+
+async function ensureOtpTable(): Promise<void> {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS email_otps (
+      id SERIAL PRIMARY KEY,
+      email TEXT NOT NULL,
+      code TEXT NOT NULL,
+      purpose TEXT NOT NULL DEFAULT 'LOGIN',
+      expires_at TIMESTAMPTZ NOT NULL,
+      used BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+}
+
+export async function sendEmailOtp(email: string, purpose: "SIGNUP" | "LOGIN"): Promise<void> {
+  await ensureOtpTable();
+  const normalizedEmail = email.toLowerCase().trim();
+  const code = String(crypto.randomInt(100000, 999999));
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+  await pool.query("UPDATE email_otps SET used = TRUE WHERE email = $1 AND used = FALSE", [normalizedEmail]);
+  await pool.query(
+    "INSERT INTO email_otps (email, code, purpose, expires_at) VALUES ($1, $2, $3, $4)",
+    [normalizedEmail, code, purpose, expiresAt]
+  );
+
+  const isSignup = purpose === "SIGNUP";
+  const subject = isSignup
+    ? `${code} is your VaultCore US Account Verification Code`
+    : `${code} is your VaultCore US Sign-In Security Code`;
+
+  const headline = isSignup
+    ? "Verify Your VaultCore US Application"
+    : "Two-Factor Sign-In Security Alert";
+
+  const introText = isSignup
+    ? "Thank you for opening an account with VaultCore US. Enter the one-time security code below to verify your email address and activate your FDIC-insured custodial accounts."
+    : "A sign-in attempt was initiated for your VaultCore US banking profile. Enter the one-time security code below to complete authentication.";
+
+  const timestamp = new Date().toUTCString();
+
+  const html = `
+  <!DOCTYPE html>
+  <html>
+  <body style="margin:0;padding:0;background-color:#F1F5F9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#F1F5F9;padding:32px 16px;">
+      <tr>
+        <td align="center">
+          <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background-color:#FFFFFF;border-radius:16px;overflow:hidden;border:1px solid #E2E8F0;">
+            <tr>
+              <td style="background-color:#0A0F1C;padding:24px 32px;border-bottom:3px solid #D4AF37;">
+                <img src="${LOGO_URL}" alt="VaultCore US" width="42" height="42" style="border-radius:10px;vertical-align:middle;border:1px solid #D4AF37;" />
+                <span style="color:#FFFFFF;font-size:20px;font-weight:800;vertical-align:middle;margin-left:12px;">VaultCore <span style="color:#D4AF37;">US</span></span>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:32px;">
+                <h1 style="margin:0 0 12px;color:#0F172A;font-size:22px;font-weight:800;">${headline}</h1>
+                <p style="margin:0 0 24px;color:#475569;font-size:14px;line-height:1.6;">${introText}</p>
+                <div style="background-color:#FFF1F2;border:1px solid #FECDD3;border-radius:12px;padding:24px;text-align:center;margin-bottom:24px;">
+                  <div style="font-size:11px;font-weight:700;color:#9F1239;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:8px;">One-Time Verification Code</div>
+                  <div style="font-family:'Courier New',monospace;font-size:36px;font-weight:800;color:#0F172A;letter-spacing:8px;">${code}</div>
+                  <div style="font-size:12px;color:#64748B;margin-top:8px;">Expires in <strong>10 minutes</strong> &bull; Do not share this code</div>
+                </div>
+                <div style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;padding:14px 18px;font-size:12px;color:#475569;line-height:1.6;">
+                  <strong>Account:</strong> ${normalizedEmail}<br />
+                  <strong>Timestamp:</strong> ${timestamp}<br />
+                  <strong>Security:</strong> 256-Bit TLS &bull; USA PATRIOT Act CIP Monitored
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="background-color:#F8FAFC;padding:18px 32px;border-top:1px solid #E2E8F0;text-align:center;font-size:11px;color:#64748B;">
+                VaultCore US Financial Technologies &bull; FDIC-Insured Partner Banks &bull; ABA 021000021
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+  </html>`;
+
+  await resend.emails.send({
+    from: FROM_EMAIL,
+    to: normalizedEmail,
+    subject,
+    html,
+  });
+}
