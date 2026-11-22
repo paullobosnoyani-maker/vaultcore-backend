@@ -39,6 +39,14 @@ async function ensureOtpTable(): Promise<void> {
     ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS used BOOLEAN NOT NULL DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+    DO $$ BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'email_otps' AND column_name = 'otp_hash'
+      ) THEN
+        ALTER TABLE email_otps ALTER COLUMN otp_hash DROP NOT NULL;
+      END IF;
+    END $$;
   `);
 }
 
