@@ -33,8 +33,12 @@ async function ensureOtpTable(): Promise<void> {
       used BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE email_otps
+    ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'LOGIN',
+    ADD COLUMN IF NOT EXISTS used BOOLEAN NOT NULL DEFAULT FALSE;
   `);
 }
+
 
 export async function sendEmailOtp(email: string, purpose: "SIGNUP" | "LOGIN"): Promise<void> {
   await ensureOtpTable();
