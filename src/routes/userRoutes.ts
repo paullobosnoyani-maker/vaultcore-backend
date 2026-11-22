@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { registerUser, loginUser, verifyOtp, resendOtp } from "../controllers/userController";
+import { registerUser, loginUser, verifyOtp, resendOtp, initiatePasswordReset, completePasswordReset } from "../controllers/userController";
 import { handleDeposit, handleP2PTransfer, handleMemberTransfer, requestWireSmsOtp, getUserDashboard } from "../controllers/ledgerController";
 import { createStripePaymentIntent, confirmStripeDeposit } from "../controllers/paymentController";
 import { submitFundingApplication, getFundingApplications, approveFundingApplication } from "../controllers/fundingController";
@@ -7,7 +7,8 @@ import { requestAchWithdrawal } from "../controllers/payoutController";
 import { authenticateToken } from "../middleware/authMiddleware";
 
 const router = Router();
-
+router.post("/forgot-password/initiate", initiatePasswordReset);
+router.post("/forgot-password/complete", completePasswordReset);
 router.post("/register", registerUser);
 router.post("/login", loginUser);
 router.post("/verify-otp", verifyOtp);
