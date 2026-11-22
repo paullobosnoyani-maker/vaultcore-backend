@@ -1,22 +1,45 @@
 import { Request, Response } from "express";
 import bcrypt from "bcrypt";
+import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import pool from "../config/db";
 import { sendEmailOtp, verifyEmailOtp } from "../services/otpService";
 
+function hashSecurityAnswer(answer: string): string {
+  return crypto
+    .createHash("sha256")
+    .update(`${answer.toLowerCase().trim()}:${process.env.JWT_SECRET || "vaultcore-sec"}`)
+    .digest("hex");
+}
+
+async function ensureSecurityColumns(): Promise<void> {
+  await pool.query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS security_q1 TEXT,
+    ADD COLUMN IF NOT EXISTS security_a1_hash TEXT,
+    ADD COLUMN IF NOT EXISTS security_q2 TEXT,
+    ADD COLUMN IF NOT EXISTS security_a2_hash TEXT;
+  `);
+}
+
 export const registerUser = async (req: Request, res: Response): Promise<void> => {
   const {
     email, password, fullName, phone, dob,
-    streetAddress, city, usState, zipCode, businessName, einOrSsn, accountCategory
+    streetAddress, city, usState, zipCode, businessName, einOrSsn, accountCategory,
+    securityQuestion1, securityAnswer1, securityQuestion2, securityAnswer2
   } = req.body;
 
-  if (!email || !password || !fullName || !phone || !dob || !streetAddress || !city || !usState || !zipCode || !einOrSsn) {
-    res.status(400).json({ error: "All identity, address, phone, DOB, and tax ID fields are required." });
+  if (
+    !email || !password || !fullName || !phone || !dob ||
+    !streetAddress || !city || !usState || !zipCode || !einOrSsn ||
+    !securityQuestion1 || !securityAnswer1 || !securityQuestion2 || !securityAnswer2
+  ) {
+    res.status(400).json({ error: "All identity, address, phone, DOB, tax ID, and security question fields are required." });
     return;
   }
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dob))) {
-    res.status(400).json({ error: "Enter a valid 4-digit birth year (YYYY-MM-DD)." });
+    res.status(400).json({ error: "Enter a valid date of birth with a 4-digit year." });
     return;
   }
   const birthYear = parseInt(String(dob).slice(0, 4), 10);
@@ -48,14 +71,18 @@ export const registerUser = async (req: Request, res: Response): Promise<void> =
   const client = await pool.connect();
 
   try {
+    await ensureSecurityColumns();
     await client.query("BEGIN");
     const hashedPassword = await bcrypt.hash(password, 10);
+    const a1Hash = hashSecurityAnswer(securityAnswer1);
+    const a2Hash = hashSecurityAnswer(securityAnswer2);
 
     const userResult = await client.query(
       `INSERT INTO users (
         email, password_hash, kyc_status, role, full_name, phone, dob,
-        street_address, city, us_state, zip_code, business_name, ein_or_ssn, ssn_last4
-      ) VALUES ($1, $2, 'SUBMITTED', 'USER', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        street_address, city, us_state, zip_code, business_name, ein_or_ssn, ssn_last4,
+        security_q1, security_a1_hash, security_q2, security_a2_hash
+      ) VALUES ($1, $2, 'VERIFIED', 'USER', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
       RETURNING id, email, kyc_status, role, full_name, business_name, us_state`,
       [
         normalizedEmail,
@@ -70,6 +97,10 @@ export const registerUser = async (req: Request, res: Response): Promise<void> =
         businessName || (isPersonal ? `${fullName} (Personal Checkings)` : fullName),
         einOrSsn,
         ssnLast4,
+        securityQuestion1,
+        a1Hash,
+        securityQuestion2,
+        a2Hash,
       ]
     );
     const newUser = userResult.rows[0];
