@@ -234,3 +234,90 @@ export const resendOtp = async (req: Request, res: Response): Promise<void> => {
     res.status(500).json({ error: error.message || "Failed to resend verification code." });
   }
 };
+export const initiatePasswordReset = async (req: Request, res: Response): Promise<void> => {
+  const { email } = req.body;
+  if (!email) {
+    res.status(400).json({ error: "Please enter your account email address." });
+    return;
+  }
+
+  const normalizedEmail = email.toLowerCase().trim();
+
+  try {
+    await ensureSecurityColumns();
+    const userRes = await pool.query(
+      "SELECT id, email, security_q1, security_q2 FROM users WHERE email = $1 LIMIT 1",
+      [normalizedEmail]
+    );
+    const user = userRes.rows.at(0);
+    if (!user) {
+      res.status(404).json({ error: "No VaultCore US account found with that email address." });
+      return;
+    }
+
+    await sendEmailOtp(normalizedEmail, "LOGIN");
+
+    res.status(200).json({
+      email: normalizedEmail,
+      hasSecurityQuestions: Boolean(user.security_q1 && user.security_q2),
+      securityQuestion1: user.security_q1 || null,
+      securityQuestion2: user.security_q2 || null,
+      message: `6-digit password reset code sent to ${normalizedEmail}.`,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Unable to initiate password reset." });
+  }
+};
+
+export const completePasswordReset = async (req: Request, res: Response): Promise<void> => {
+  const { email, code, answer1, answer2, newPassword } = req.body;
+  if (!email || !code || !newPassword) {
+    res.status(400).json({ error: "Email, 6-digit reset code, and new password are required." });
+    return;
+  }
+  if (String(newPassword).length < 8) {
+    res.status(400).json({ error: "New password must be at least 8 characters long." });
+    return;
+  }
+
+  const normalizedEmail = email.toLowerCase().trim();
+
+  try {
+    await ensureSecurityColumns();
+    const userRes = await pool.query(
+      "SELECT id, security_q1, security_a1_hash, security_q2, security_a2_hash FROM users WHERE email = $1 LIMIT 1",
+      [normalizedEmail]
+    );
+    const user = userRes.rows.at(0);
+    if (!user) {
+      res.status(404).json({ error: "Account not found." });
+      return;
+    }
+
+    if (user.security_a1_hash && user.security_a2_hash) {
+      if (!answer1 || !answer2) {
+        res.status(400).json({ error: "Please answer both security questions." });
+        return;
+      }
+      const h1 = hashSecurityAnswer(String(answer1));
+      const h2 = hashSecurityAnswer(String(answer2));
+      if (h1 !== user.security_a1_hash || h2 !== user.security_a2_hash) {
+        res.status(401).json({ error: "One or both security question answers do not match our records." });
+        return;
+      }
+    }
+
+    const validOtp = await verifyEmailOtp(normalizedEmail, String(code).trim());
+    if (!validOtp) {
+      res.status(401).json({ error: "Invalid or expired 6-digit reset code." });
+      return;
+    }
+
+    const hashedPassword = await bcrypt.hash(String(newPassword), 10);
+    await pool.query("UPDATE users SET password_hash = $1 WHERE id = $2", [hashedPassword, user.id]);
+
+    res.status(200).json({ message: "Password updated successfully. You may now sign in with your new password." });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Failed to reset password." });
+  }
+};
