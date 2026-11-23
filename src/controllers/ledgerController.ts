@@ -305,39 +305,165 @@ export const handleMemberTransfer = async (req: Request, res: Response): Promise
   }
 };
 
-export const getUserDashboard = async (req: Request, res: Response): Promise<void> => {
-  const { userId } = req.params;
+export const handleDeposit = async (req: Request, res: Response): Promise<void> => {
+  const { accountId, amount, description } = req.body;
+  const parsedAmount = parseFloat(amount);
+
+  if (!accountId || isNaN(parsedAmount) || parsedAmount <= 0) {
+    res.status(400).json({ error: "Invalid accountId or deposit amount." });
+    return;
+  }
+
   try {
-    const walletsResult = await pool.query(
-      `SELECT a.id, a.account_name, a.account_type, a.currency,
-              COALESCE(SUM(l.amount), 0) AS balance
-       FROM accounts a
-       LEFT JOIN ledger l ON a.id = l.account_id
-       WHERE a.user_id = $1
-       GROUP BY a.id, a.account_name, a.account_type, a.currency, a.created_at
-       ORDER BY a.created_at ASC`,
-      [userId]
+    const result = await pool.query(
+      `INSERT INTO ledger (account_id, amount, transaction_type, description)
+       VALUES ($1, $2, 'DEPOSIT', $3) RETURNING *`,
+      [accountId, parsedAmount, description || "ACH / Wire Deposit"]
+    );
+    res.status(201).json({ message: "Deposit settled", transaction: result.rows.at(0) });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Error processing deposit." });
+  }
+};
+
+export const handleP2PTransfer = async (req: Request, res: Response): Promise<void> => {
+  const { fromAccountId, toAccountId, amount, description } = req.body;
+  const parsedAmount = parseFloat(amount);
+
+  if (!fromAccountId || !toAccountId || fromAccountId === toAccountId || isNaN(parsedAmount) || parsedAmount <= 0) {
+    res.status(400).json({ error: "Invalid source, destination, or transfer amount." });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const balRes = await client.query(
+      "SELECT COALESCE(SUM(amount), 0) AS balance FROM ledger WHERE account_id = $1",
+      [fromAccountId]
+    );
+    const currentBalance = parseFloat(balRes.rows.at(0)?.balance || "0");
+
+    if (currentBalance < parsedAmount) {
+      await client.query("ROLLBACK");
+      res.status(400).json({ error: "Insufficient funds in source wallet." });
+      return;
+    }
+
+    await client.query(
+      `INSERT INTO ledger (account_id, amount, transaction_type, description)
+       VALUES ($1, $2, 'INTERNAL_TRANSFER_OUT', $3)`,
+      [fromAccountId, -parsedAmount, description || "Internal Sub-Account Rebalance"]
     );
 
-    const txResult = await pool.query(
-      `SELECT l.id, l.amount, l.transaction_type, l.description, l.created_at, a.account_name
-       FROM ledger l
-       JOIN accounts a ON l.account_id = a.id
-       WHERE a.user_id = $1
-       ORDER BY l.created_at DESC
-       LIMIT 25`,
-      [userId]
+    await client.query(
+      `INSERT INTO ledger (account_id, amount, transaction_type, description)
+       VALUES ($1, $2, 'INTERNAL_TRANSFER_IN', $3)`,
+      [toAccountId, parsedAmount, description || "Internal Sub-Account Rebalance"]
     );
 
+    await client.query("COMMIT");
+    res.status(200).json({ message: `Transferred $${parsedAmount.toFixed(2)} USD between accounts.` });
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ error: error.message || "Internal transfer failed." });
+  } finally {
+    client.release();
+  }
+};
+
+export const handleMemberTransfer = async (req: Request, res: Response): Promise<void> => {
+  const { fromAccountId, recipientIdentifier, amount, description, otpCode } = req.body;
+  const parsedAmount = parseFloat(amount);
+  const senderId = (req as any).user?.id || (req as any).user?.userId;
+
+  if (!fromAccountId || !recipientIdentifier || isNaN(parsedAmount) || parsedAmount <= 0) {
+    res.status(400).json({ error: "Source account, recipient identifier, and amount are required." });
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    if (senderId && otpCode) {
+      const valid = await verifyWireSmsOtp(senderId, String(otpCode).trim());
+      if (!valid) {
+        await client.query("ROLLBACK");
+        res.status(401).json({ error: "Invalid or expired 6-digit wire security code." });
+        return;
+      }
+    }
+
+    const balRes = await client.query(
+      "SELECT COALESCE(SUM(amount), 0) AS balance FROM ledger WHERE account_id = $1",
+      [fromAccountId]
+    );
+    const currentBalance = parseFloat(balRes.rows.at(0)?.balance || "0");
+    if (currentBalance < parsedAmount) {
+      await client.query("ROLLBACK");
+      res.status(400).json({ error: "Insufficient funds in source wallet." });
+      return;
+    }
+
+    const cleanRecipient = String(recipientIdentifier).trim();
+    const isAcctNum = /^\d{12}$/.test(cleanRecipient);
+    let targetUser: any = null;
+
+    if (isAcctNum) {
+      const allUsers = await client.query("SELECT id, email, full_name, business_name FROM users");
+      targetUser = allUsers.rows.find(
+        (u: any) => generateUniqueAccountNumber(`${u.id}:${u.email}`) === cleanRecipient
+      );
+    } else {
+      const uRes = await client.query(
+        "SELECT id, email, full_name, business_name FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1",
+        [cleanRecipient]
+      );
+      targetUser = uRes.rows.at(0);
+    }
+
+    if (!targetUser) {
+      await client.query("ROLLBACK");
+      res.status(404).json({ error: "No verified VaultCore US recipient found for that Account Number or email." });
+      return;
+    }
+
+    const destAccRes = await client.query(
+      "SELECT id FROM accounts WHERE user_id = $1 ORDER BY created_at ASC LIMIT 1",
+      [targetUser.id]
+    );
+    const destAccountId = destAccRes.rows.at(0)?.id;
+    if (!destAccountId) {
+      await client.query("ROLLBACK");
+      res.status(404).json({ error: "Recipient does not have an active receiving account." });
+      return;
+    }
+
+    const recipientLabel = targetUser.full_name || targetUser.business_name || targetUser.email;
+
+    await client.query(
+      `INSERT INTO ledger (account_id, amount, transaction_type, description)
+       VALUES ($1, $2, 'WIRE_TRANSFER_OUT', $3)`,
+      [fromAccountId, -parsedAmount, description || `Wire Transfer to ${recipientLabel} (${cleanRecipient})`]
+    );
+
+    await client.query(
+      `INSERT INTO ledger (account_id, amount, transaction_type, description)
+       VALUES ($1, $2, 'WIRE_TRANSFER_IN', $3)`,
+      [destAccountId, parsedAmount, description || `Incoming Wire Transfer (${cleanRecipient})`]
+    );
+
+    await client.query("COMMIT");
     res.status(200).json({
-      wallets: walletsResult.rows.map((w: any) => ({
-        ...w,
-        balance: parseFloat(w.balance || "0").toFixed(2),
-      })),
-      recentTransactions: txResult.rows,
+      message: `Instant wire of $${parsedAmount.toFixed(2)} USD settled to ${recipientLabel}.`,
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message || "Failed to load dashboard." });
+    await client.query("ROLLBACK");
+    res.status(500).json({ error: error.message || "Wire transfer failed." });
+  } finally {
+    client.release();
   }
 };
 
