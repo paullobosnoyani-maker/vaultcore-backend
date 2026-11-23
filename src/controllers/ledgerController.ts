@@ -341,47 +341,4 @@ export const getUserDashboard = async (req: Request, res: Response): Promise<voi
   }
 };
 
-    const wallets = await Promise.all(
-      walletsResult.rows.map(async (w: any) => {
-        let txSum = 0;
-        if (fkCol) {
-          const sumRes = await pool.query(
-            `SELECT COALESCE(SUM(amount), 0) AS total FROM transactions WHERE ${fkCol} = $1`,
-            [w.id]
-          );
-          txSum = parseFloat(sumRes.rows.at(0)?.total || "0");
-        }
-        const stored = parseFloat(w.stored_balance || "0");
-        const finalBalance = Math.abs(txSum) > 0 ? txSum : stored;
-        return {
-          id: w.id,
-          account_name: w.account_name,
-          account_type: w.account_type,
-          currency: w.currency || "USD",
-          balance: finalBalance.toFixed(2),
-        };
-      })
-    );
-
-    let recentTransactions: any[] = [];
-    if (fkCol) {
-      const txResult = await pool.query(
-        `SELECT t.id, t.amount, t.transaction_type, t.description, t.created_at, a.account_name
-         FROM transactions t
-         JOIN accounts a ON t.${fkCol} = a.id
-         WHERE a.user_id = $1
-         ORDER BY t.created_at DESC
-         LIMIT 25`,
-        [userId]
-      );
-      recentTransactions = txResult.rows;
-    }
-
-    res.status(200).json({
-      wallets,
-      recentTransactions,
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message || "Failed to load dashboard." });
-  }
-};
+    
