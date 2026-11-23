@@ -54,8 +54,15 @@ export const handleDeposit = async (req: Request, res: Response): Promise<void> 
        VALUES ($1, $2, 'DEPOSIT', $3) RETURNING *`,
       [accountId, parsedAmount, description || "ACH Deposit"]
     );
+    await client.query(
+      `DO $$ BEGIN
+         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'accounts' AND column_name = 'balance') THEN
+           UPDATE accounts SET balance = COALESCE(balance, 0) + ${parsedAmount} WHERE id = '${accountId}';
+         END IF;
+       END $$;`
+    );
     await client.query("COMMIT");
-    res.status(201).json({ message: "Deposit settled", transaction: result.rows[0] });
+    res.status(201).json({ message: "Deposit settled", transaction: result.rows.at(0) });
   } catch (error: any) {
     await client.query("ROLLBACK");
     res.status(500).json({ error: error.message || "Error processing deposit." });
@@ -63,6 +70,7 @@ export const handleDeposit = async (req: Request, res: Response): Promise<void> 
     client.release();
   }
 };
+
 
 export const handleP2PTransfer = async (req: Request, res: Response): Promise<void> => {
   const { senderAccountId, receiverAccountId, amount, description } = req.body;
@@ -240,30 +248,65 @@ export const handleMemberTransfer = async (req: Request, res: Response): Promise
 export const getUserDashboard = async (req: Request, res: Response): Promise<void> => {
   const { userId } = req.params;
   try {
+    const accColsRes = await pool.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'accounts'`
+    );
+    const accCols = new Set(accColsRes.rows.map((r: any) => r.column_name));
+    const hasBalanceCol = accCols.has("balance");
+
+    const txColsRes = await pool.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'transactions'`
+    );
+    const txCols = new Set(txColsRes.rows.map((r: any) => r.column_name));
+    const fkCol = txCols.has("account_id") ? "account_id" : txCols.has("wallet_id") ? "wallet_id" : null;
+
     const walletsResult = await pool.query(
-      `SELECT a.id, a.account_name, a.account_type, a.currency,
-              COALESCE(SUM(t.amount), 0) AS balance
-       FROM accounts a
-       LEFT JOIN transactions t ON a.id = t.account_id
-       WHERE a.user_id = $1
-       GROUP BY a.id
-       ORDER BY a.created_at ASC`,
+      `SELECT id, account_name, account_type, currency${hasBalanceCol ? ", COALESCE(balance, 0) AS stored_balance" : ", 0 AS stored_balance"}
+       FROM accounts
+       WHERE user_id = $1
+       ORDER BY created_at ASC`,
       [userId]
     );
 
-    const txResult = await pool.query(
-      `SELECT t.id, t.amount, t.transaction_type, t.description, t.created_at, a.account_name
-       FROM transactions t
-       JOIN accounts a ON t.account_id = a.id
-       WHERE a.user_id = $1
-       ORDER BY t.created_at DESC
-       LIMIT 25`,
-      [userId]
+    const wallets = await Promise.all(
+      walletsResult.rows.map(async (w: any) => {
+        let txSum = 0;
+        if (fkCol) {
+          const sumRes = await pool.query(
+            `SELECT COALESCE(SUM(amount), 0) AS total FROM transactions WHERE ${fkCol} = $1`,
+            [w.id]
+          );
+          txSum = parseFloat(sumRes.rows.at(0)?.total || "0");
+        }
+        const stored = parseFloat(w.stored_balance || "0");
+        const finalBalance = Math.abs(txSum) > 0 ? txSum : stored;
+        return {
+          id: w.id,
+          account_name: w.account_name,
+          account_type: w.account_type,
+          currency: w.currency || "USD",
+          balance: finalBalance.toFixed(2),
+        };
+      })
     );
+
+    let recentTransactions: any[] = [];
+    if (fkCol) {
+      const txResult = await pool.query(
+        `SELECT t.id, t.amount, t.transaction_type, t.description, t.created_at, a.account_name
+         FROM transactions t
+         JOIN accounts a ON t.${fkCol} = a.id
+         WHERE a.user_id = $1
+         ORDER BY t.created_at DESC
+         LIMIT 25`,
+        [userId]
+      );
+      recentTransactions = txResult.rows;
+    }
 
     res.status(200).json({
-      wallets: walletsResult.rows,
-      recentTransactions: txResult.rows,
+      wallets,
+      recentTransactions,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message || "Failed to load dashboard." });
