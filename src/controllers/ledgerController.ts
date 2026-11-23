@@ -49,18 +49,77 @@ export const handleDeposit = async (req: Request, res: Response): Promise<void> 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+
+    const accRes = await client.query("SELECT * FROM accounts WHERE id = $1 LIMIT 1", [accountId]);
+    const account = accRes.rows.at(0);
+    if (!account) {
+      await client.query("ROLLBACK");
+      res.status(404).json({ error: "Target account not found." });
+      return;
+    }
+
+    const txColsRes = await client.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'transactions'`
+    );
+    const txCols = new Set(txColsRes.rows.map((r: any) => r.column_name));
+
+    const cols: string[] = [];
+    const vals: any[] = [];
+
+    if (txCols.has("account_id")) {
+      cols.push("account_id");
+      vals.push(accountId);
+    }
+    if (txCols.has("wallet_id")) {
+      cols.push("wallet_id");
+      vals.push(accountId);
+    }
+    if (txCols.has("user_id") && account.user_id) {
+      cols.push("user_id");
+      vals.push(account.user_id);
+    }
+    if (txCols.has("amount")) {
+      cols.push("amount");
+      vals.push(parsedAmount);
+    }
+    if (txCols.has("transaction_type")) {
+      cols.push("transaction_type");
+      vals.push("DEPOSIT");
+    }
+    if (txCols.has("type") && !txCols.has("transaction_type")) {
+      cols.push("type");
+      vals.push("DEPOSIT");
+    }
+    if (txCols.has("status")) {
+      cols.push("status");
+      vals.push("COMPLETED");
+    }
+    if (txCols.has("currency")) {
+      cols.push("currency");
+      vals.push(account.currency || "USD");
+    }
+    if (txCols.has("description")) {
+      cols.push("description");
+      vals.push(description || "ACH / Wire Deposit");
+    }
+
+    const placeholders = cols.map((_, i) => `$${i + 1}`).join(", ");
     const result = await client.query(
-      `INSERT INTO transactions (account_id, amount, transaction_type, description)
-       VALUES ($1, $2, 'DEPOSIT', $3) RETURNING *`,
-      [accountId, parsedAmount, description || "ACH Deposit"]
+      `INSERT INTO transactions (${cols.join(", ")}) VALUES (${placeholders}) RETURNING *`,
+      vals
     );
-    await client.query(
-      `DO $$ BEGIN
-         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'accounts' AND column_name = 'balance') THEN
-           UPDATE accounts SET balance = COALESCE(balance, 0) + ${parsedAmount} WHERE id = '${accountId}';
-         END IF;
-       END $$;`
+
+    const accColsRes = await client.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'accounts'`
     );
+    const accCols = new Set(accColsRes.rows.map((r: any) => r.column_name));
+    if (accCols.has("balance")) {
+      await client.query(
+        "UPDATE accounts SET balance = COALESCE(balance, 0) + $1 WHERE id = $2",
+        [parsedAmount, accountId]
+      );
+    }
+
     await client.query("COMMIT");
     res.status(201).json({ message: "Deposit settled", transaction: result.rows.at(0) });
   } catch (error: any) {
@@ -70,6 +129,7 @@ export const handleDeposit = async (req: Request, res: Response): Promise<void> 
     client.release();
   }
 };
+
 
 
 export const handleP2PTransfer = async (req: Request, res: Response): Promise<void> => {
