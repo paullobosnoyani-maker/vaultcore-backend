@@ -75,13 +75,16 @@ export const handleDeposit = async (req: Request, res: Response): Promise<void> 
 };
 
 export const handleP2PTransfer = async (req: Request, res: Response): Promise<void> => {
-  const { fromAccountId, toAccountId, amount, description } = req.body;
+  const fromAccountId = req.body.fromAccountId || req.body.fromWalletId || req.body.sourceAccountId;
+  const toAccountId = req.body.toAccountId || req.body.toWalletId || req.body.destinationAccountId;
+  const { amount, description } = req.body;
   const parsedAmount = parseFloat(amount);
 
   if (!fromAccountId || !toAccountId || fromAccountId === toAccountId || isNaN(parsedAmount) || parsedAmount <= 0) {
     res.status(400).json({ error: "Invalid source, destination, or transfer amount." });
     return;
   }
+
 
   const client = await pool.connect();
   try {
