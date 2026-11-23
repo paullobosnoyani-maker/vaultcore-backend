@@ -18,290 +18,38 @@ function generateUniqueAccountNumber(seed: string): string {
   return `88${part1.slice(0, 5)}${part2.slice(0, 5)}`;
 }
 
-async function findRecipientUserByIdentifier(identifier: string) {
-  const raw = String(identifier || "").trim();
-  const digits = raw.replace(/\D/g, "");
-  const usersRes = await pool.query("SELECT id, email, full_name, business_name FROM users");
-
-  if (digits.length === 12 && digits.startsWith("88")) {
-    return (
-      usersRes.rows.find(
-        (u: any) =>
-          generateUniqueAccountNumber(`:${u.email}`) === digits ||
-          generateUniqueAccountNumber(`${u.id}:${u.email}`) === digits
-      ) || null
-    );
-  }
-
-  const normalizedEmail = raw.toLowerCase();
-  return usersRes.rows.find((u: any) => String(u.email || "").toLowerCase().trim() === normalizedEmail) || null;
-}
-
-export const handleDeposit = async (req: Request, res: Response): Promise<void> => {
-  const { accountId, amount, description } = req.body;
-  const parsedAmount = parseFloat(amount);
-
-  if (!accountId || isNaN(parsedAmount) || parsedAmount <= 0) {
-    res.status(400).json({ error: "Invalid accountId or deposit amount." });
-    return;
-  }
-
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-
-    const accRes = await client.query("SELECT * FROM accounts WHERE id = $1 LIMIT 1", [accountId]);
-    const account = accRes.rows.at(0);
-    if (!account) {
-      await client.query("ROLLBACK");
-      res.status(404).json({ error: "Target account not found." });
-      return;
-    }
-
-    const txColsRes = await client.query(
-      `SELECT column_name FROM information_schema.columns WHERE table_name = 'transactions'`
-    );
-    const txCols = new Set(txColsRes.rows.map((r: any) => r.column_name));
-
-    const cols: string[] = [];
-    const vals: any[] = [];
-
-    if (txCols.has("account_id")) {
-      cols.push("account_id");
-      vals.push(accountId);
-    }
-    if (txCols.has("wallet_id")) {
-      cols.push("wallet_id");
-      vals.push(accountId);
-    }
-    if (txCols.has("user_id") && account.user_id) {
-      cols.push("user_id");
-      vals.push(account.user_id);
-    }
-    if (txCols.has("amount")) {
-      cols.push("amount");
-      vals.push(parsedAmount);
-    }
-    if (txCols.has("transaction_type")) {
-      cols.push("transaction_type");
-      vals.push("DEPOSIT");
-    }
-    if (txCols.has("type") && !txCols.has("transaction_type")) {
-      cols.push("type");
-      vals.push("DEPOSIT");
-    }
-    if (txCols.has("status")) {
-      cols.push("status");
-      vals.push("COMPLETED");
-    }
-    if (txCols.has("currency")) {
-      cols.push("currency");
-      vals.push(account.currency || "USD");
-    }
-    if (txCols.has("description")) {
-      cols.push("description");
-      vals.push(description || "ACH / Wire Deposit");
-    }
-
-    const placeholders = cols.map((_, i) => `$${i + 1}`).join(", ");
-    const result = await client.query(
-      `INSERT INTO transactions (${cols.join(", ")}) VALUES (${placeholders}) RETURNING *`,
-      vals
-    );
-
-    const accColsRes = await client.query(
-      `SELECT column_name FROM information_schema.columns WHERE table_name = 'accounts'`
-    );
-    const accCols = new Set(accColsRes.rows.map((r: any) => r.column_name));
-    if (accCols.has("balance")) {
-      await client.query(
-        "UPDATE accounts SET balance = COALESCE(balance, 0) + $1 WHERE id = $2",
-        [parsedAmount, accountId]
-      );
-    }
-
-    await client.query("COMMIT");
-    res.status(201).json({ message: "Deposit settled", transaction: result.rows.at(0) });
-  } catch (error: any) {
-    await client.query("ROLLBACK");
-    res.status(500).json({ error: error.message || "Error processing deposit." });
-  } finally {
-    client.release();
-  }
-};
-
-
-
-export const handleP2PTransfer = async (req: Request, res: Response): Promise<void> => {
-  const { senderAccountId, receiverAccountId, amount, description } = req.body;
-  const parsedAmount = parseFloat(amount);
-
-  if (!senderAccountId || !receiverAccountId || isNaN(parsedAmount) || parsedAmount <= 0) {
-    res.status(400).json({ error: "Invalid transfer parameters." });
-    return;
-  }
-  if (senderAccountId === receiverAccountId) {
-    res.status(400).json({ error: "Cannot transfer to the same account." });
-    return;
-  }
-
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-
-    const balanceCheck = await client.query(
-      "SELECT COALESCE(SUM(amount), 0) AS balance FROM transactions WHERE account_id = $1",
-      [senderAccountId]
-    );
-    const currentBalance = parseFloat(balanceCheck.rows[0]?.balance || "0");
-    if (currentBalance < parsedAmount) {
-      await client.query("ROLLBACK");
-      res.status(400).json({ error: "Insufficient funds in source wallet." });
-      return;
-    }
-
-    await client.query(
-      `INSERT INTO transactions (account_id, amount, transaction_type, description)
-       VALUES ($1, $2, 'TRANSFER_OUT', $3)`,
-      [senderAccountId, -parsedAmount, description || "Internal Transfer Out"]
-    );
-    await client.query(
-      `INSERT INTO transactions (account_id, amount, transaction_type, description)
-       VALUES ($1, $2, 'TRANSFER_IN', $3)`,
-      [receiverAccountId, parsedAmount, description || "Internal Transfer In"]
-    );
-
-    await client.query("COMMIT");
-    res.status(200).json({ message: `Transferred $${parsedAmount.toFixed(2)} USD between wallets.` });
-  } catch (error: any) {
-    await client.query("ROLLBACK");
-    res.status(500).json({ error: error.message || "Transfer failed." });
-  } finally {
-    client.release();
-  }
-};
-
 export const requestWireSmsOtp = async (req: Request, res: Response): Promise<void> => {
-  const { senderId, recipientEmail, amount } = req.body;
-  const parsedAmount = parseFloat(amount);
+  const userId = (req as any).user?.id || (req as any).user?.userId;
+  const { amount } = req.body;
+  const parsedAmount = parseFloat(amount || "0");
 
-  if (!senderId || !recipientEmail || isNaN(parsedAmount) || parsedAmount <= 0) {
-    res.status(400).json({ error: "Recipient account/email and a valid USD amount are required." });
+  if (!userId) {
+    res.status(401).json({ error: "Unauthorized session." });
     return;
   }
 
   try {
-    const senderRes = await pool.query("SELECT id, phone, email FROM users WHERE id = $1 LIMIT 1", [senderId]);
-    const sender = senderRes.rows[0];
-    if (!sender) {
-      res.status(404).json({ error: "Sender account not found." });
+    const uRes = await pool.query("SELECT email, phone FROM users WHERE id = $1 LIMIT 1", [userId]);
+    const user = uRes.rows.at(0);
+    if (!user) {
+      res.status(404).json({ error: "User not found." });
       return;
     }
 
-    const recipientUser = await findRecipientUserByIdentifier(recipientEmail);
-    if (!recipientUser) {
-      res.status(404).json({ error: "No VaultCore account matches that 12-digit account number or email." });
-      return;
-    }
-    if (recipientUser.id === senderId) {
-      res.status(400).json({ error: "Cannot send a member wire to your own account." });
-      return;
-    }
+    const result = await sendWireSmsOtp({
+      userId,
+      email: user.email,
+      phone: user.phone,
+      amount: parsedAmount > 0 ? parsedAmount : 1,
+    });
 
-    const maskedDestination = await sendWireSmsOtp(senderId, sender.phone || "", parsedAmount);
     res.status(200).json({
-      message: `6-digit security authorization code sent to ${maskedDestination}.`,
+      channel: result.channel,
+      maskedTarget: result.maskedTarget,
+      message: `6-digit wire authorization code sent to ${result.maskedTarget}.`,
     });
   } catch (error: any) {
-    res.status(500).json({ error: error.message || "Failed to send verification code." });
-  }
-};
-
-export const handleMemberTransfer = async (req: Request, res: Response): Promise<void> => {
-  const { senderId, recipientEmail, amount, smsCode } = req.body;
-  const parsedAmount = parseFloat(amount);
-
-  if (!senderId || !recipientEmail || isNaN(parsedAmount) || parsedAmount <= 0 || !smsCode) {
-    res.status(400).json({ error: "Recipient, amount, and 6-digit security code are required." });
-    return;
-  }
-
-  const validCode = await verifyWireSmsOtp(senderId, String(smsCode));
-  if (!validCode) {
-    res.status(401).json({ error: "Invalid or expired 6-digit security authorization code." });
-    return;
-  }
-
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-
-    const senderWalletReq = await client.query(
-      "SELECT id FROM accounts WHERE user_id = $1 ORDER BY created_at ASC LIMIT 1",
-      [senderId]
-    );
-    if (senderWalletReq.rows.length === 0) {
-      await client.query("ROLLBACK");
-      res.status(404).json({ error: "Sender primary wallet not found." });
-      return;
-    }
-    const senderWalletId = senderWalletReq.rows[0].id;
-
-    const recipientUser = await findRecipientUserByIdentifier(recipientEmail);
-    if (!recipientUser) {
-      await client.query("ROLLBACK");
-      res.status(404).json({ error: "No VaultCore account matches that 12-digit account number or email." });
-      return;
-    }
-    if (recipientUser.id === senderId) {
-      await client.query("ROLLBACK");
-      res.status(400).json({ error: "Cannot send a member wire to your own account." });
-      return;
-    }
-
-    const recipientWalletReq = await client.query(
-      "SELECT id FROM accounts WHERE user_id = $1 ORDER BY created_at ASC LIMIT 1",
-      [recipientUser.id]
-    );
-    if (recipientWalletReq.rows.length === 0) {
-      await client.query("ROLLBACK");
-      res.status(404).json({ error: "Recipient primary wallet not found." });
-      return;
-    }
-    const recipientWalletId = recipientWalletReq.rows[0].id;
-
-    const balanceReq = await client.query(
-      "SELECT COALESCE(SUM(amount), 0) AS balance FROM transactions WHERE account_id = $1",
-      [senderWalletId]
-    );
-    const currentBalance = parseFloat(balanceReq.rows[0]?.balance || "0");
-    if (currentBalance < parsedAmount) {
-      await client.query("ROLLBACK");
-      res.status(400).json({ error: "Insufficient balance in primary checking wallet." });
-      return;
-    }
-
-    const recipientLabel = recipientUser.business_name || recipientUser.full_name || recipientUser.email;
-    await client.query(
-      `INSERT INTO transactions (account_id, amount, transaction_type, description)
-       VALUES ($1, $2, 'WIRE_OUT', $3)`,
-      [senderWalletId, -parsedAmount, `VaultCore Member Wire to ${recipientLabel}`]
-    );
-    await client.query(
-      `INSERT INTO transactions (account_id, amount, transaction_type, description)
-       VALUES ($1, $2, 'WIRE_IN', $3)`,
-      [recipientWalletId, parsedAmount, `VaultCore Member Wire Received`]
-    );
-
-    await client.query("COMMIT");
-    res.status(200).json({
-      message: `Settled $${parsedAmount.toFixed(2)} USD instant wire to ${recipientLabel}.`,
-    });
-  } catch (error: any) {
-    await client.query("ROLLBACK");
-    res.status(500).json({ error: error.message || "Member wire failed." });
-  } finally {
-    client.release();
+    res.status(500).json({ error: error.message || "Failed to send wire security code." });
   }
 };
 
@@ -372,7 +120,6 @@ export const handleP2PTransfer = async (req: Request, res: Response): Promise<vo
     client.release();
   }
 };
-
 export const handleMemberTransfer = async (req: Request, res: Response): Promise<void> => {
   const { fromAccountId, recipientIdentifier, amount, description, otpCode } = req.body;
   const parsedAmount = parseFloat(amount);
@@ -467,4 +214,38 @@ export const handleMemberTransfer = async (req: Request, res: Response): Promise
   }
 };
 
-    
+export const getUserDashboard = async (req: Request, res: Response): Promise<void> => {
+  const { userId } = req.params;
+  try {
+    const walletsResult = await pool.query(
+      `SELECT a.id, a.account_name, a.account_type, a.currency,
+              COALESCE(SUM(l.amount), 0) AS balance
+       FROM accounts a
+       LEFT JOIN ledger l ON a.id = l.account_id
+       WHERE a.user_id = $1
+       GROUP BY a.id, a.account_name, a.account_type, a.currency, a.created_at
+       ORDER BY a.created_at ASC`,
+      [userId]
+    );
+
+    const txResult = await pool.query(
+      `SELECT l.id, l.amount, l.transaction_type, l.description, l.created_at, a.account_name
+       FROM ledger l
+       JOIN accounts a ON l.account_id = a.id
+       WHERE a.user_id = $1
+       ORDER BY l.created_at DESC
+       LIMIT 25`,
+      [userId]
+    );
+
+    res.status(200).json({
+      wallets: walletsResult.rows.map((w: any) => ({
+        ...w,
+        balance: parseFloat(w.balance || "0").toFixed(2),
+      })),
+      recentTransactions: txResult.rows,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Failed to load dashboard." });
+  }
+};
