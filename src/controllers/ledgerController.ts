@@ -308,25 +308,38 @@ export const handleMemberTransfer = async (req: Request, res: Response): Promise
 export const getUserDashboard = async (req: Request, res: Response): Promise<void> => {
   const { userId } = req.params;
   try {
-    const accColsRes = await pool.query(
-      `SELECT column_name FROM information_schema.columns WHERE table_name = 'accounts'`
-    );
-    const accCols = new Set(accColsRes.rows.map((r: any) => r.column_name));
-    const hasBalanceCol = accCols.has("balance");
-
-    const txColsRes = await pool.query(
-      `SELECT column_name FROM information_schema.columns WHERE table_name = 'transactions'`
-    );
-    const txCols = new Set(txColsRes.rows.map((r: any) => r.column_name));
-    const fkCol = txCols.has("account_id") ? "account_id" : txCols.has("wallet_id") ? "wallet_id" : null;
-
     const walletsResult = await pool.query(
-      `SELECT id, account_name, account_type, currency${hasBalanceCol ? ", COALESCE(balance, 0) AS stored_balance" : ", 0 AS stored_balance"}
-       FROM accounts
-       WHERE user_id = $1
-       ORDER BY created_at ASC`,
+      `SELECT a.id, a.account_name, a.account_type, a.currency,
+              COALESCE(SUM(l.amount), 0) AS balance
+       FROM accounts a
+       LEFT JOIN ledger l ON a.id = l.account_id
+       WHERE a.user_id = $1
+       GROUP BY a.id, a.account_name, a.account_type, a.currency, a.created_at
+       ORDER BY a.created_at ASC`,
       [userId]
     );
+
+    const txResult = await pool.query(
+      `SELECT l.id, l.amount, l.transaction_type, l.description, l.created_at, a.account_name
+       FROM ledger l
+       JOIN accounts a ON l.account_id = a.id
+       WHERE a.user_id = $1
+       ORDER BY l.created_at DESC
+       LIMIT 25`,
+      [userId]
+    );
+
+    res.status(200).json({
+      wallets: walletsResult.rows.map((w: any) => ({
+        ...w,
+        balance: parseFloat(w.balance || "0").toFixed(2),
+      })),
+      recentTransactions: txResult.rows,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || "Failed to load dashboard." });
+  }
+};
 
     const wallets = await Promise.all(
       walletsResult.rows.map(async (w: any) => {
