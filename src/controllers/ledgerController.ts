@@ -201,11 +201,15 @@ export const handleMemberTransfer = async (req: Request, res: Response): Promise
     const isAcctNum = /^\d{12}$/.test(cleanRecipient);
     let targetUser: any = null;
 
-    if (isAcctNum) {
+      if (isAcctNum) {
       const allUsers = await client.query("SELECT id, email, full_name, business_name FROM users");
       targetUser = allUsers.rows.find(
-        (u: any) => generateUniqueAccountNumber(`${u.id}:${u.email}`) === cleanRecipient
+        (u: any) =>
+          generateUniqueAccountNumber(`${u.id}:${u.email}`) === cleanRecipient ||
+          generateUniqueAccountNumber(`:${u.email}`) === cleanRecipient
       );
+    }
+
     } else {
       const uRes = await client.query(
         "SELECT id, email, full_name, business_name FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1",
