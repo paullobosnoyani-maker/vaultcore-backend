@@ -208,8 +208,8 @@ export const handleMemberTransfer = async (req: Request, res: Response): Promise
           generateUniqueAccountNumber(`${u.id}:${u.email}`) === cleanRecipient ||
           generateUniqueAccountNumber(`:${u.email}`) === cleanRecipient
       );
-    }
     } else {
+
       const uRes = await client.query(
         "SELECT id, email, full_name, business_name FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1",
         [cleanRecipient]
