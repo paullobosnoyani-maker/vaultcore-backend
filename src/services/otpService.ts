@@ -160,8 +160,9 @@ export async function verifyEmailOtp(email: string, code: string): Promise<"SIGN
   );
   if (res.rows.length === 0) return null;
 
-  await pool.query("UPDATE email_otps SET used = TRUE WHERE id = $1", [res.rows.id]);
-  return res.rows.purpose === "SIGNUP" ? "SIGNUP" : "LOGIN";
+   await pool.query("UPDATE email_otps SET used = TRUE WHERE id = $1", [res.rows[0].id]);
+  return res.rows[0].purpose === "SIGNUP" ? "SIGNUP" : "LOGIN";
+
 }
 
 export async function sendWelcomeEmail(user: {
