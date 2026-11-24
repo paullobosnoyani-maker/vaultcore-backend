@@ -137,12 +137,23 @@ export const handleP2PTransfer = async (req: Request, res: Response): Promise<vo
   }
 };
 export const handleMemberTransfer = async (req: Request, res: Response): Promise<void> => {
-  const { fromAccountId, recipientIdentifier, amount, description, otpCode } = req.body;
+  const { fromAccountId, senderUserId, recipientIdentifier, amount, description, otpCode, smsCode } = req.body;
   const parsedAmount = parseFloat(amount);
-  const senderId = (req as any).user?.id || (req as any).user?.userId;
+  const senderId = (req as any).user?.id || (req as any).user?.userId || senderUserId;
+  const verificationCode = smsCode || otpCode;
 
-  if (!fromAccountId || !recipientIdentifier || isNaN(parsedAmount) || parsedAmount <= 0) {
-    res.status(400).json({ error: "Source account, recipient identifier, and amount are required." });
+  if (!recipientIdentifier || isNaN(parsedAmount) || parsedAmount <= 0) {
+    res.status(400).json({ error: "Recipient identifier and a valid amount are required." });
+    return;
+  }
+
+  if (!senderId) {
+    res.status(401).json({ error: "Unauthorized session." });
+    return;
+  }
+
+  if (!verificationCode) {
+    res.status(400).json({ error: "6-digit wire verification code is required." });
     return;
   }
 
@@ -150,18 +161,34 @@ export const handleMemberTransfer = async (req: Request, res: Response): Promise
   try {
     await client.query("BEGIN");
 
-    if (senderId && otpCode) {
-      const valid = await verifyWireSmsOtp(senderId, String(otpCode).trim());
-      if (!valid) {
-        await client.query("ROLLBACK");
-        res.status(401).json({ error: "Invalid or expired 6-digit wire security code." });
-        return;
-      }
+    const valid = await verifyWireSmsOtp(senderId, String(verificationCode).trim());
+    if (!valid) {
+      await client.query("ROLLBACK");
+      res.status(401).json({ error: "Invalid or expired 6-digit wire security code." });
+      return;
+    }
+
+    let resolvedFromAccountId = fromAccountId;
+    if (!resolvedFromAccountId) {
+      const srcAccRes = await client.query(
+        `SELECT id FROM accounts
+         WHERE user_id = $1
+         ORDER BY CASE WHEN account_type = 'EVERYDAY' THEN 0 ELSE 1 END, created_at ASC
+         LIMIT 1`,
+        [senderId]
+      );
+      resolvedFromAccountId = srcAccRes.rows.at(0)?.id;
+    }
+
+    if (!resolvedFromAccountId) {
+      await client.query("ROLLBACK");
+      res.status(404).json({ error: "No active source checking account found for sender." });
+      return;
     }
 
     const balRes = await client.query(
       "SELECT COALESCE(SUM(amount), 0) AS balance FROM ledger WHERE account_id = $1",
-      [fromAccountId]
+      [resolvedFromAccountId]
     );
     const currentBalance = parseFloat(balRes.rows.at(0)?.balance || "0");
     if (currentBalance < parsedAmount) {
@@ -209,7 +236,7 @@ export const handleMemberTransfer = async (req: Request, res: Response): Promise
     await client.query(
       `INSERT INTO ledger (account_id, amount, transaction_type, description)
        VALUES ($1, $2, 'WIRE_TRANSFER_OUT', $3)`,
-      [fromAccountId, -parsedAmount, description || `Wire Transfer to ${recipientLabel} (${cleanRecipient})`]
+            [resolvedFromAccountId, -parsedAmount, description || `Wire Transfer to ${recipientLabel} (${cleanRecipient})`]
     );
 
     await client.query(
