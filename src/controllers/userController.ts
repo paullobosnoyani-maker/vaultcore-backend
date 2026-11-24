@@ -1,3 +1,17 @@
+import crypto from "crypto";
+import { Request, Response } from "express";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import pool from "../config/db";
+import { sendEmailOtp, verifyEmailOtp } from "../services/otpService";
+
+function hashSecurityAnswer(answer: string): string {
+  return crypto
+    .createHash("sha256")
+    .update(String(answer).trim().toLowerCase())
+    .digest("hex");
+}
+
 async function ensureSecurityColumns(): Promise<void> {
   await pool.query(`
     ALTER TABLE users
