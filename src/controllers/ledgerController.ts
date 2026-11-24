@@ -137,7 +137,17 @@ export const handleP2PTransfer = async (req: Request, res: Response): Promise<vo
   }
 };
 export const handleMemberTransfer = async (req: Request, res: Response): Promise<void> => {
-  const { fromAccountId, senderUserId, recipientIdentifier, amount, description, otpCode, smsCode } = req.body;
+  const {
+    fromAccountId,
+    senderUserId,
+    recipientIdentifier,
+    recipientName,
+    routingNumber,
+    amount,
+    description,
+    otpCode,
+    smsCode,
+  } = req.body;
   const parsedAmount = parseFloat(amount);
   const senderId = (req as any).user?.id || (req as any).user?.userId || senderUserId;
   const verificationCode = smsCode || otpCode;
@@ -146,6 +156,12 @@ export const handleMemberTransfer = async (req: Request, res: Response): Promise
     res.status(400).json({ error: "Recipient identifier and a valid amount are required." });
     return;
   }
+
+  if (routingNumber && !/^\d{9}$/.test(String(routingNumber).trim())) {
+    res.status(400).json({ error: "Enter a valid 9-digit US ABA routing number (e.g. 021000021)." });
+    return;
+  }
+
 
   if (!senderId) {
     res.status(401).json({ error: "Unauthorized session." });
@@ -234,13 +250,16 @@ export const handleMemberTransfer = async (req: Request, res: Response): Promise
       return;
     }
 
-    const recipientLabel = targetUser.full_name || targetUser.business_name || targetUser.email;
+    const verifiedName = targetUser.full_name || targetUser.business_name || targetUser.email;
+    const recipientLabel = recipientName ? `${String(recipientName).trim()} (${verifiedName})` : verifiedName;
+    const routingTag = routingNumber ? ` • ABA ${String(routingNumber).trim()}` : "";
 
     await client.query(
       `INSERT INTO ledger (account_id, amount, transaction_type, description)
        VALUES ($1, $2, 'WIRE_TRANSFER_OUT', $3)`,
-            [resolvedFromAccountId, -parsedAmount, description || `Wire Transfer to ${recipientLabel} (${cleanRecipient})`]
+      [resolvedFromAccountId, -parsedAmount, description || `Wire Transfer to ${recipientLabel}${routingTag} (${cleanRecipient})`]
     );
+
 
     await client.query(
       `INSERT INTO ledger (account_id, amount, transaction_type, description)
