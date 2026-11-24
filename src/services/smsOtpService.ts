@@ -28,7 +28,7 @@ function postTwilioSms(sid: string, token: string, formBody: string): Promise<vo
     const auth = Buffer.from(`${sid}:${token}`).toString("base64");
     const req = https.request(
       {
-        hostname: "://twilio.com",
+        hostname: "api.twilio.com",
         port: 443,
         path: `/2010-04-01/Accounts/${sid}/Messages.json`,
         method: "POST",
