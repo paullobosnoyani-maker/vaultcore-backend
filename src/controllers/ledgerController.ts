@@ -36,18 +36,19 @@ export const requestWireSmsOtp = async (req: Request, res: Response): Promise<vo
       return;
     }
 
-    const result = await sendWireSmsOtp({
+      const destination = await sendWireSmsOtp(
       userId,
-      email: user.email,
-      phone: user.phone,
-      amount: parsedAmount > 0 ? parsedAmount : 1,
+      user.phone || "",
+      parsedAmount > 0 ? parsedAmount : 1
+    );
+
+
+      res.status(200).json({
+      channel: destination.startsWith("SMS") ? "SMS" : "EMAIL",
+      maskedTarget: destination,
+      message: `6-digit wire authorization code sent to ${destination}.`,
     });
 
-    res.status(200).json({
-      channel: result.channel,
-      maskedTarget: result.maskedTarget,
-      message: `6-digit wire authorization code sent to ${result.maskedTarget}.`,
-    });
   } catch (error: any) {
     res.status(500).json({ error: error.message || "Failed to send wire security code." });
   }
